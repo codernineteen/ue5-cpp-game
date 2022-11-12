@@ -2,6 +2,10 @@
 
 
 #include "CGCharacter.h"
+#include "CGAnimInstance.h"
+#include "DrawDebugHelpers.h"
+
+#define ENABLE_DRAW_DEBUG 1
 
 // Sets default values
 ACGCharacter::ACGCharacter()
@@ -38,7 +42,17 @@ ACGCharacter::ACGCharacter()
 
 	ArmLengthSpeed = 3.0f;
 	ArmRotationSpeed = 10.0f;
-	GetCharacterMovement()->JumpZVelocity(); //Character class has Jump member function already
+	GetCharacterMovement()->JumpZVelocity = 800.0f; //Character class has Jump member function already
+
+	IsAttacking = false;
+
+	MaxCombo = 4;
+	AttackEndComboState();
+
+	GetCapsuleComponent()->SetCollisionProfileName(TEXT("CGCharacter"));
+
+	AttackRange = 200.0f;
+	AttackRadius = 50.0f;
 }
 
 // Control mode
@@ -121,6 +135,7 @@ void ACGCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputCompone
 	PlayerInputComponent->BindAxis(TEXT("LookUp"), this, &ACGCharacter::LookUp);
 	PlayerInputComponent->BindAction(TEXT("Jump"), EInputEvent::IE_Pressed, this, &ACGCharacter::Jump);
 	PlayerInputComponent->BindAction(TEXT("ChangeView"), EInputEvent::IE_Pressed, this, &ACGCharacter::ChangeView);
+	PlayerInputComponent->BindAction(TEXT("Attack"), EInputEvent::IE_Pressed, this, &ACGCharacter::Attack);
 }
 
 void ACGCharacter::ForwardBackward(float AxisValue)
@@ -172,6 +187,7 @@ void ACGCharacter::LookUp(float AxisValue)
 	}
 }
 
+
 void ACGCharacter::ChangeView() 
 {
 	if (CurrentControlMode == EControlMode::GTA)
@@ -184,4 +200,132 @@ void ACGCharacter::ChangeView()
 		GetController()->SetControlRotation(SpringArm->GetRelativeRotation());
 		SetControlMode(EControlMode::GTA);
 	}
+}
+
+void ACGCharacter::PostInitializeComponents()
+{
+	Super::PostInitializeComponents();
+
+	CGAnim = Cast<UCGAnimInstance>(GetMesh()->GetAnimInstance());
+	CGCHECK(nullptr != CGAnim);
+
+	CGAnim->OnMontageEnded.AddDynamic(this, &ACGCharacter::OnAttackMontageEnded);
+
+	CGAnim->OnNextAttackCheck.AddLambda([this]() {
+		CGLOG_S(Warning);
+		CanNextCombo = false;
+
+		if (IsComboInputOn)
+		{
+			AttackStartComboState();
+			CGAnim->JumpToAttackMontageSection(CurrentCombo);
+		}
+		}
+	);
+
+	CGAnim->OnAttackHitCheck.AddUObject(this, &ACGCharacter::AttackCheck);
+}
+
+void ACGCharacter::AttackStartComboState()
+{
+	CanNextCombo = true;
+	IsComboInputOn = false;
+	CGCHECK(FMath::IsWithinInclusive<int32>(CurrentCombo, 0, MaxCombo - 1));
+	CurrentCombo = FMath::Clamp<int32>(CurrentCombo + 1, 1, MaxCombo);
+}
+
+void ACGCharacter::AttackEndComboState()
+{
+	IsComboInputOn = false;
+	CanNextCombo = false;
+	CurrentCombo = 0;
+}
+
+void ACGCharacter::Attack() {
+	if (IsAttacking) {
+		CGCHECK(FMath::IsWithinInclusive<int32>(CurrentCombo, 1, MaxCombo));
+		if (CanNextCombo)
+		{
+			IsComboInputOn = true;
+		}
+	}
+	else
+	{
+		CGCHECK(CurrentCombo == 0);
+		AttackStartComboState();
+		CGAnim->PlayAttackMontage();
+		CGAnim->JumpToAttackMontageSection(CurrentCombo);
+		IsAttacking = true;
+	}
+}
+
+void ACGCharacter::AttackCheck()
+{
+	FHitResult HitResult;
+	FCollisionQueryParams Params(NAME_None, false, this);
+	//collision detection - sweep single by channel
+	bool bResult = GetWorld()->SweepSingleByChannel(
+		HitResult,
+		GetActorLocation(), 
+		GetActorLocation() + GetActorForwardVector() * 200.0f,
+		FQuat::Identity,//identity quaternion
+		ECollisionChannel::ECC_GameTraceChannel2,
+		FCollisionShape::MakeSphere(50.0f),
+		Params
+	);
+	//Debug drawing code
+#if ENABLE_DRAW_DEBUG
+	FVector TraceVec = GetActorForwardVector() * AttackRange;
+	FVector Center = GetActorLocation() + TraceVec * 0.5f;
+	float HalfHeight = AttackRange * 0.5f + AttackRadius;
+	FQuat CapsuleRot = FRotationMatrix::MakeFromZ(TraceVec).ToQuat();
+	FColor DrawColor = bResult ? FColor::Green : FColor::Red;
+	float DebugLifetime = 5.0f;
+
+	DrawDebugCapsule(
+		GetWorld(),
+		Center,
+		HalfHeight,
+		AttackRadius,
+		CapsuleRot,
+		DrawColor,
+		false,
+		DebugLifetime
+	);
+#endif
+
+	if (bResult)
+	{
+		//there is no IsValid in ue5 c++
+		if (HitResult.GetActor()->IsValidLowLevel())
+		{
+			CGLOG(Warning, TEXT("Hit Actor Name: %s"), *HitResult.GetActor()->GetName());
+
+			//Damage transmission
+			FDamageEvent DamageEvent;
+			HitResult.GetActor()->TakeDamage(50.0f, DamageEvent, GetController(), this);
+		}
+	}
+}
+
+void ACGCharacter::OnAttackMontageEnded(UAnimMontage* Montage, bool bInteruppted)
+{
+	CGCHECK(IsAttacking);
+	CGCHECK(CurrentCombo > 0);
+	IsAttacking = false;
+	AttackEndComboState();
+}
+
+float ACGCharacter::TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, class AController* EventInstigator, AActor* DamageCauser)
+{
+	float FinalDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+	CGLOG(Warning, TEXT("Actor: %s took damage(%f)"), *GetName(), FinalDamage);
+
+	if (FinalDamage > 0.0f)
+	{
+		CGAnim->SetDeadAnim();
+		SetActorEnableCollision(false); // if dead, no collision
+	}
+
+	return FinalDamage;
 }
