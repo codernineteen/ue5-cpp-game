@@ -3,9 +3,10 @@
 
 #include "CGCharacter.h"
 #include "CGAnimInstance.h"
+#include "CGWeapon.h"
 #include "DrawDebugHelpers.h"
 
-#define ENABLE_DRAW_DEBUG 1
+#define ENABLE_DRAW_DEBUG 0
 
 // Sets default values
 ACGCharacter::ACGCharacter()
@@ -37,22 +38,26 @@ ACGCharacter::ACGCharacter()
 		GetMesh()->SetAnimInstanceClass(ABP_WARRIOR.Class);
 	}
 
-	
+	//Default cam mode and spring arm setting
 	SetControlMode(EControlMode::DIABLO);
 
 	ArmLengthSpeed = 3.0f;
 	ArmRotationSpeed = 10.0f;
-	GetCharacterMovement()->JumpZVelocity = 800.0f; //Character class has Jump member function already
+	GetCharacterMovement()->JumpZVelocity = 400.0f; //Character class has Jump member function already
 
+	//for attack motion and combo
 	IsAttacking = false;
 
 	MaxCombo = 4;
 	AttackEndComboState();
 
+	//for default collision presets
 	GetCapsuleComponent()->SetCollisionProfileName(TEXT("CGCharacter"));
 
+	//for debug drawing
 	AttackRange = 200.0f;
 	AttackRadius = 50.0f;
+
 }
 
 // Control mode
@@ -93,6 +98,16 @@ void ACGCharacter::SetControlMode(EControlMode ControlMode) {
 void ACGCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+
+	//attach weapon to character socket
+	//FName WeaponSocket(TEXT("hand_rSocket"));
+	//
+	////Spawn actor (World function)
+	//auto CurWeapon = GetWorld()->SpawnActor<ACGWeapon>(FVector::ZeroVector, FRotator::ZeroRotator); //auto type referecne
+	//if (nullptr != CurWeapon)
+	//{
+	//	CurWeapon->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, WeaponSocket);
+	//}
 	
 }
 
@@ -308,6 +323,20 @@ void ACGCharacter::AttackCheck()
 	}
 }
 
+float ACGCharacter::TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, class AController* EventInstigator, AActor* DamageCauser)
+{
+	float FinalDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
+
+	if (FinalDamage > 0.0f)
+	{
+		CGAnim->SetDeadAnim();
+		SetActorEnableCollision(false);
+	}
+	return FinalDamage;
+
+
+};
+
 void ACGCharacter::OnAttackMontageEnded(UAnimMontage* Montage, bool bInteruppted)
 {
 	CGCHECK(IsAttacking);
@@ -316,16 +345,19 @@ void ACGCharacter::OnAttackMontageEnded(UAnimMontage* Montage, bool bInteruppted
 	AttackEndComboState();
 }
 
-float ACGCharacter::TakeDamage(float DamageAmount, struct FDamageEvent const& DamageEvent, class AController* EventInstigator, AActor* DamageCauser)
+bool ACGCharacter::CanSetWeapon()
 {
-	float FinalDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
-	CGLOG(Warning, TEXT("Actor: %s took damage(%f)"), *GetName(), FinalDamage);
+	return (nullptr == CurrentWeapon); // if current weapon is null pointer, return true
+}
 
-	if (FinalDamage > 0.0f)
+void ACGCharacter::SetWeapon(ACGWeapon* NewWeapon)
+{
+	CGCHECK(nullptr != NewWeapon && nullptr == CurrentWeapon); //Current weapon is nullptr initially
+	FName WeaponSocket(TEXT("hand_rSocket"));
+	if (nullptr != NewWeapon)
 	{
-		CGAnim->SetDeadAnim();
-		SetActorEnableCollision(false); // if dead, no collision
+		NewWeapon->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, WeaponSocket);
+		NewWeapon->SetOwner(this);
+		CurrentWeapon = NewWeapon;
 	}
-
-	return FinalDamage;
 }
