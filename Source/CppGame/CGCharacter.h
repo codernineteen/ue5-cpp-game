@@ -58,6 +58,12 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = Weapon)
 		class ACGWeapon* CurrentWeapon;
 
+	UPROPERTY(VisibleAnywhere, Category = Stat)
+		class UCGCharacterStatComponent* CharacterStat;
+
+	UPROPERTY(VisibleAnywhere, Category = UI)
+		class UWidgetComponent* HPBarWidget;
+
 private:
 	void ForwardBackward(float AxisValue);
 	void RightLeft(float AxisValue);

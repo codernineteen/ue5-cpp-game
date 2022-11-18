@@ -5,6 +5,9 @@
 #include "CGAnimInstance.h"
 #include "CGWeapon.h"
 #include "DrawDebugHelpers.h"
+#include "CGCharacterStatComponent.h"
+#include "Components/WidgetComponent.h"
+#include "CGUserWidget.h"
 
 #define ENABLE_DRAW_DEBUG 0
 
@@ -14,18 +17,24 @@ ACGCharacter::ACGCharacter()
  	// Set this character to call Tick() every frame.  You can turn this off to improve performance if you don't need it.
 	PrimaryActorTick.bCanEverTick = true;
 
+	// Default objects
 	SpringArm = CreateDefaultSubobject<USpringArmComponent>(TEXT("SPRINGARM"));
 	Camera = CreateDefaultSubobject<UCameraComponent>(TEXT("CAMERA"));
+	CharacterStat = CreateDefaultSubobject<UCGCharacterStatComponent>(TEXT("CHARACTERSTAT"));
+	HPBarWidget = CreateDefaultSubobject<UWidgetComponent>(TEXT("HPBARWIDGET"));
 
 	SpringArm->SetupAttachment(GetCapsuleComponent());
 	Camera->SetupAttachment(SpringArm);
+	HPBarWidget->SetupAttachment(GetMesh());
 
-	GetMesh()->SetRelativeLocationAndRotation(FVector(0.0f, 0.0f, -88.0f), FRotator(0.0f, -90.0f, 0.0f));
 	SpringArm->TargetArmLength = 400.0f;
+	HPBarWidget->SetWidgetSpace(EWidgetSpace::Screen);
+
 	SpringArm->SetRelativeRotation(FRotator(-15.0f, 0.0f, 0.0f));
+	HPBarWidget->SetRelativeLocation(FVector(0.0f, 0.0f, 200.0f));
+	GetMesh()->SetRelativeLocationAndRotation(FVector(0.0f, 0.0f, -88.0f), FRotator(0.0f, -90.0f, 0.0f));
 
 	static ConstructorHelpers::FObjectFinder<USkeletalMesh> SKM_CARDBOARD(TEXT("/Game/InfinityBladeWarriors/Character/CompleteCharacters/SK_CharM_Cardboard.SK_CharM_Cardboard"));
-
 	if (SKM_CARDBOARD.Succeeded()) {
 		GetMesh()->SetSkeletalMesh(SKM_CARDBOARD.Object);
 	}
@@ -33,9 +42,14 @@ ACGCharacter::ACGCharacter()
 	GetMesh()->SetAnimationMode(EAnimationMode::AnimationBlueprint);
 
 	static ConstructorHelpers::FClassFinder<UAnimInstance> ABP_WARRIOR(TEXT("/Game/Blueprints/ABP_CGPlayer.ABP_CGPlayer_C"));
-
 	if(ABP_WARRIOR.Succeeded()) {
 		GetMesh()->SetAnimInstanceClass(ABP_WARRIOR.Class);
+	}
+
+	static ConstructorHelpers::FClassFinder<UUserWidget> UI_HUD(TEXT("/Game/Blueprints/UI_HpBar.UI_HpBar_C"));
+	if (UI_HUD.Succeeded()) {
+		HPBarWidget->SetWidgetClass(UI_HUD.Class);
+		HPBarWidget->SetDrawSize(FVector2D(150.0f, 50.0f));
 	}
 
 	//Default cam mode and spring arm setting
@@ -57,7 +71,6 @@ ACGCharacter::ACGCharacter()
 	//for debug drawing
 	AttackRange = 200.0f;
 	AttackRadius = 50.0f;
-
 }
 
 // Control mode
@@ -98,16 +111,6 @@ void ACGCharacter::SetControlMode(EControlMode ControlMode) {
 void ACGCharacter::BeginPlay()
 {
 	Super::BeginPlay();
-
-	//attach weapon to character socket
-	//FName WeaponSocket(TEXT("hand_rSocket"));
-	//
-	////Spawn actor (World function)
-	//auto CurWeapon = GetWorld()->SpawnActor<ACGWeapon>(FVector::ZeroVector, FRotator::ZeroRotator); //auto type referecne
-	//if (nullptr != CurWeapon)
-	//{
-	//	CurWeapon->AttachToComponent(GetMesh(), FAttachmentTransformRules::SnapToTargetNotIncludingScale, WeaponSocket);
-	//}
 	
 }
 
@@ -221,13 +224,14 @@ void ACGCharacter::PostInitializeComponents()
 {
 	Super::PostInitializeComponents();
 
+	HPBarWidget->InitWidget();
+
 	CGAnim = Cast<UCGAnimInstance>(GetMesh()->GetAnimInstance());
 	CGCHECK(nullptr != CGAnim);
 
 	CGAnim->OnMontageEnded.AddDynamic(this, &ACGCharacter::OnAttackMontageEnded);
 
 	CGAnim->OnNextAttackCheck.AddLambda([this]() {
-		CGLOG_S(Warning);
 		CanNextCombo = false;
 
 		if (IsComboInputOn)
@@ -239,6 +243,19 @@ void ACGCharacter::PostInitializeComponents()
 	);
 
 	CGAnim->OnAttackHitCheck.AddUObject(this, &ACGCharacter::AttackCheck);
+
+	CharacterStat->OnHPIsZero.AddLambda([this]() {
+		CGAnim->SetDeadAnim();
+		SetActorEnableCollision(false);
+	});
+
+	auto CharacterWidget = Cast<UCGUserWidget>(HPBarWidget->GetWidget());
+	//Can't bind CharacterStat because this widget point
+	CGCHECK(nullptr != CharacterWidget)
+	if (nullptr != CharacterWidget)
+	{
+		CharacterWidget->BindCharacterStat(CharacterStat);
+	}
 }
 
 void ACGCharacter::AttackStartComboState()
@@ -318,7 +335,7 @@ void ACGCharacter::AttackCheck()
 
 			//Damage transmission
 			FDamageEvent DamageEvent;
-			HitResult.GetActor()->TakeDamage(50.0f, DamageEvent, GetController(), this);
+			HitResult.GetActor()->TakeDamage(CharacterStat->GetAttack(), DamageEvent, GetController(), this);
 		}
 	}
 }
@@ -327,14 +344,8 @@ float ACGCharacter::TakeDamage(float DamageAmount, struct FDamageEvent const& Da
 {
 	float FinalDamage = Super::TakeDamage(DamageAmount, DamageEvent, EventInstigator, DamageCauser);
 
-	if (FinalDamage > 0.0f)
-	{
-		CGAnim->SetDeadAnim();
-		SetActorEnableCollision(false);
-	}
+	CharacterStat->SetDamage(FinalDamage);
 	return FinalDamage;
-
-
 };
 
 void ACGCharacter::OnAttackMontageEnded(UAnimMontage* Montage, bool bInteruppted)
